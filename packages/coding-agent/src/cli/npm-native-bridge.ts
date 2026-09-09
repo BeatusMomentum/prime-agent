@@ -2,11 +2,15 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
 	existsSync,
+	linkSync,
+	lstatSync,
 	mkdtempSync,
 	readFileSync,
+	readlinkSync,
 	realpathSync,
 	renameSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -38,6 +42,8 @@ function migrationTarget(): string | undefined {
 	const commandName = Object.keys(metadata.bin)[0];
 	if (!commandName || basename(commandName) !== commandName) return undefined;
 	const publicCommand = join(dirname(dirname(modules)), "bin", commandName);
+	const commandIdentity = lstatSync(publicCommand);
+	const entryIdentity = statSync(entrypoint);
 	const root =
 		process.env.PRIME_AGENT_INSTALL_DIR ||
 		join(process.env.XDG_DATA_HOME || join(homedir(), ".local/share"), "prime-agent");
@@ -45,6 +51,13 @@ function migrationTarget(): string | undefined {
 	const ownsPackageLink = realpathSync(publicCommand) === realpathSync(entrypoint);
 	if (!ownsPackageLink && (!native || realpathSync(publicCommand) !== native.executable)) return undefined;
 	if (!native || (comparePackageVersions(native.version, metadata.version) ?? -1) < 0) {
+		if (
+			args.includes("--internal-update-restart-coordinator") ||
+			args.some((arg, index) => arg === "--mode" && args[index + 1] === "daemon") ||
+			process.env.PRIME_AGENT_INTERNAL_DAEMON_WORKER ||
+			process.env.PRIME_AGENT_INTERNAL_DAEMON_CATALOG
+		)
+			return undefined;
 		if (process.env.PI_OFFLINE || args.includes("--offline")) return undefined;
 		const retryFile = join(packageDir, "dist/.native-migration-attempt");
 		if (
@@ -80,17 +93,56 @@ function migrationTarget(): string | undefined {
 		native = readNativeInstallation(root);
 		if (!native || native.version !== metadata.version) return undefined;
 	}
+	const platform = spawnSync("sh", [join(packageDir, "dist/install.sh"), "--native-platform"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 3000,
+	});
+	if (platform.status !== 0 || platform.stdout.trim() !== native.platform) return undefined;
+	const probe = spawnSync(native.executable, ["--version"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 3000,
+	});
+	if (probe.status !== 0 || probe.stdout.trim() !== native.version) return undefined;
 	if (!ownsPackageLink) return native.launcher;
-	// Replace only the symlink still owned by this package; future launches no longer need Node.
+	// Capture the link, then create exclusively so a concurrent npm install cannot be overwritten.
 	const staging = mkdtempSync(join(dirname(publicCommand), ".prime-agent-link-"));
+	const captured = join(staging, "command");
+	let needsRestore = false;
+	let capturedOwned = false;
 	try {
-		symlinkSync(native.launcher, join(staging, "command"));
-		if (realpathSync(publicCommand) !== realpathSync(entrypoint)) return undefined;
-		renameSync(join(staging, "command"), publicCommand);
+		renameSync(publicCommand, captured);
+		needsRestore = true;
+		const capturedIdentity = lstatSync(captured);
+		capturedOwned = capturedIdentity.dev === commandIdentity.dev && capturedIdentity.ino === commandIdentity.ino;
+		const currentEntry = statSync(entrypoint);
+		if (
+			!capturedOwned ||
+			currentEntry.dev !== entryIdentity.dev ||
+			currentEntry.ino !== entryIdentity.ino ||
+			currentEntry.mtimeMs !== entryIdentity.mtimeMs ||
+			currentEntry.size !== entryIdentity.size
+		)
+			return undefined;
+		symlinkSync(native.launcher, publicCommand);
+		needsRestore = false;
+		return native.launcher;
 	} finally {
-		rmSync(staging, { recursive: true, force: true });
+		if (needsRestore) {
+			try {
+				if (lstatSync(captured).isSymbolicLink()) symlinkSync(readlinkSync(captured), publicCommand);
+				else linkSync(captured, publicCommand);
+				needsRestore = false;
+			} catch (error) {
+				if (capturedOwned && error instanceof Error && "code" in error && error.code === "EEXIST")
+					needsRestore = false;
+			}
+		}
+		if (needsRestore)
+			console.error(`prime-agent: command handoff deferred; the displaced command is preserved at ${captured}`);
+		else rmSync(staging, { recursive: true, force: true });
 	}
-	return native.launcher;
 }
 
 let target: string | undefined;

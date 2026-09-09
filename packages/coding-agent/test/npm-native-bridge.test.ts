@@ -14,6 +14,7 @@ import {
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { transformSync } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -23,10 +24,10 @@ let pkg: string;
 let entry: string;
 let publicCommand: string;
 
-function native(version = "1.0.0", suffix = "") {
+function native(version = "1.0.0", suffix = "", platform = `${process.platform}-${process.arch}`) {
 	const install = join(home, "data/prime-agent");
 	const digest = "a".repeat(64);
-	const name = `${version}-${process.platform}-${process.arch}-${digest}${suffix}`;
+	const name = `${version}-${platform}-${digest}${suffix}`;
 	const release = join(install, "releases", name);
 	mkdirSync(release, { recursive: true });
 	mkdirSync(join(install, "bin"), { recursive: true });
@@ -107,9 +108,9 @@ describe.skipIf(process.platform === "win32")("npm release bridge", () => {
 			stdout: "native:argument with spaces\nnative:--rpc\n",
 		});
 		expect(realpathSync(publicCommand)).toBe(executable);
-		expect(await run(["update", "--daemon-update-restart-coordinator"])).toMatchObject({
+		expect(await run(["update", "--internal-update-restart-coordinator"])).toMatchObject({
 			code: 0,
-			stdout: "native:update\nnative:--daemon-update-restart-coordinator\n",
+			stdout: "native:update\nnative:--internal-update-restart-coordinator\n",
 		});
 		expect(execFileSync(publicCommand, ["--version"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" })).toBe(
 			"1.0.0\n",
@@ -119,6 +120,86 @@ describe.skipIf(process.platform === "win32")("npm release bridge", () => {
 		native("1.0.1");
 		expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "1.0.1\n" });
 	});
+	it.each(["platform", "unsupported", "broken", "wrong version"])(
+		"keeps Node for an incompatible native release: %s",
+		async (failure) => {
+			const executable = native(
+				"1.0.0",
+				"",
+				failure === "platform"
+					? `${process.platform}-${process.arch === "arm64" ? "x64" : "arm64"}`
+					: `${process.platform}-${process.arch}`,
+			);
+			if (failure === "unsupported") writeFileSync(join(pkg, "dist/install.sh"), "#!/bin/sh\nexit 1\n");
+			if (failure === "broken") writeFileSync(executable, "#!/bin/sh\nexit 1\n");
+			if (failure === "wrong version") writeFileSync(executable, "#!/bin/sh\necho 0.8.0\n");
+			expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "node:--version\n" });
+			expect(realpathSync(publicCommand)).toBe(entry);
+		},
+	);
+
+	it.each([
+		{ label: "coordinator", args: ["update", "--internal-update-restart-coordinator"], env: {}, previous: undefined },
+		{
+			label: "coordinator with older native",
+			args: ["update", "--internal-update-restart-coordinator"],
+			env: {},
+			previous: "0.9.0",
+		},
+		{ label: "daemon", args: ["--mode", "daemon"], env: {}, previous: undefined },
+		{ label: "worker", args: [], env: { PRIME_AGENT_INTERNAL_DAEMON_WORKER: "1" }, previous: undefined },
+		{ label: "catalog", args: [], env: { PRIME_AGENT_INTERNAL_DAEMON_CATALOG: "1" }, previous: undefined },
+	])("does not start migration before $label liveness", async ({ args, env, previous }) => {
+		if (previous) native(previous);
+		expect(await run(args, env)).toEqual({ code: 0, stdout: `node:${args.join("|")}\n`, stderr: "" });
+		expect(existsSync(join(pkg, "dist/.native-migration-attempt"))).toBe(false);
+		expect(realpathSync(publicCommand)).toBe(entry);
+	});
+
+	it.each(["capture", "create", "package"])(
+		"preserves a competing npm installation during command %s",
+		async (phase) => {
+			native();
+			const replacement = join(root, "new-command.js");
+			writeFileSync(replacement, "new package command\n");
+			const hook = join(root, "race-hook.mjs");
+			writeFileSync(
+				hook,
+				`
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const command = ${JSON.stringify(publicCommand)};
+const entry = ${JSON.stringify(entry)};
+const replacement = ${JSON.stringify(replacement)};
+const phase = ${JSON.stringify(phase)};
+const rename = fs.renameSync;
+const symlink = fs.symlinkSync;
+fs.renameSync = (source, destination) => {
+  if (phase !== "create" && (source === command || destination === command)) {
+    if (phase === "package") {
+      fs.copyFileSync(entry, entry + ".new");
+      rename(entry + ".new", entry);
+    } else {
+      fs.rmSync(command);
+      symlink(replacement, command);
+    }
+  }
+  return rename(source, destination);
+};
+fs.symlinkSync = (target, path) => {
+  if (phase === "create" && path === command) symlink(replacement, command);
+  return symlink(target, path);
+};
+syncBuiltinESMExports();
+`,
+			);
+			expect(await run(["--version"], { NODE_OPTIONS: `--import=${pathToFileURL(hook).href}` })).toMatchObject({
+				code: 0,
+				stdout: "node:--version\n",
+			});
+			expect(realpathSync(publicCommand)).toBe(phase === "package" ? entry : replacement);
+		},
+	);
 	it.each([undefined, "0.9.0"])("preserves a competing newer install while migrating from %s", async (previous) => {
 		await withReleaseFeed(async () => {
 			if (previous) native(previous);

@@ -74,11 +74,13 @@ The installer still shows download and verification progress and can prepare Pyt
 
 ## Migration from npm
 
-Releases containing native archives also include a bridge at the existing npm CLI entrypoint. An old version can install that release through its existing updater; its next launch (including the daemon restart coordinator) downloads and verifies the compiled application. The bridge only migrates conventional global npm installs whose command still points to that package. It then replaces that owned command link with the managed native launcher, so subsequent launches do not require Node. Existing Node files and shared runtimes are retained.
+Releases containing native archives also include a bridge at the existing npm CLI entrypoint. An old version can install that release through its existing updater; its next normal user launch downloads and verifies the compiled application. Internal daemon and restart-coordinator launches do not start a migration download, so they can report liveness immediately; they can reuse an already compatible compiled release. The bridge only migrates conventional global npm installs whose command still points to that package. It then transfers that owned command link to the managed native launcher, so subsequent launches do not require Node. Existing Node files and shared runtimes are retained.
 
 Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
 
 Migration reuses an equal or newer managed release. It also checks the captured active release after acquiring the installer lock: if another install wins the race, migration defers to the Node application instead of overwriting that install. The next launch can adopt the newer managed release.
+
+Before reusing a compiled release, the bridge checks the installer's OS/architecture compatibility result and probes the executable's version. Command handoff captures the npm link and creates the native link exclusively, so a concurrent npm command wins instead of being overwritten. The public path can be briefly absent during this one-time transfer. If abrupt termination prevents restoration, the captured command remains under the adjacent `.prime-agent-link-*` directory for recovery; the versioned application and user data remain intact.
 
 Failed automatic migrations retry after 24 hours; `PRIME_AGENT_MIGRATE_RETRY=1` retries immediately. Homebrew packaging remains separate work.
 

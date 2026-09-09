@@ -30,7 +30,9 @@ const assets = [
 ];
 const platform = `${process.platform}-${process.arch}`;
 const feed = new Map<string, Buffer>();
+let beforeArchiveResponse: (() => void) | undefined;
 const server = createServer((request, response) => {
+	if (request.url?.endsWith(".tar.gz")) beforeArchiveResponse?.();
 	const data = feed.get(request.url ?? "");
 	response.writeHead(data ? 200 : 404);
 	response.end(data ?? "not found");
@@ -73,8 +75,8 @@ function publish(version: string, options: { broken?: boolean; missing?: boolean
 	return filename;
 }
 
-async function install(version: string, extra: NodeJS.ProcessEnv = {}) {
-	return run("sh", [installer, version], extra);
+async function install(version: string, extra: NodeJS.ProcessEnv = {}, entrypoint = installer) {
+	return run("sh", [entrypoint, version], extra);
 }
 
 async function run(executable: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
@@ -140,6 +142,7 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 	beforeEach(() => {
 		home = mkdtempSync(join(root, "home with spaces-"));
 		feed.clear();
+		beforeArchiveResponse = undefined;
 		vi.stubEnv("PI_OFFLINE", "");
 		vi.stubEnv("PI_SKIP_VERSION_CHECK", "");
 		vi.stubEnv("PRIME_AGENT_DOWNLOAD_BASE_URL", "");
@@ -344,6 +347,23 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 		expect(existsSync(join(home, ".local/outside"))).toBe(false);
 	});
 
+	it("preserves a public command replaced by another installer during download", async () => {
+		publish("1.0.0");
+		expect((await install("1.0.0")).code).toBe(0);
+		const current = readlinkSync(command());
+		const publicCommand = join(home, ".local/bin/prime-agent");
+		publish("1.0.1");
+		beforeArchiveResponse = () => {
+			rmSync(publicCommand);
+			writeFileSync(publicCommand, "owned by another installer");
+		};
+		const result = await install("1.0.1");
+		expect(result.code, result.output).not.toBe(0);
+		expect(result.output).toContain("refusing to replace existing command");
+		expect(readFileSync(publicCommand, "utf8")).toBe("owned by another installer");
+		expect(readlinkSync(command())).toBe(current);
+	});
+
 	it.each(["", "../releases/an-earlier-install/prime-agent"])(
 		"rejects a stale migration expectation (%s)",
 		async (expected) => {
@@ -382,6 +402,26 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 		expect(result.code).not.toBe(0);
 		expect(result.output).toContain("installation is locked");
 		expect(readFileSync(join(lock, "pid"), "utf8")).toBe(`${process.pid}\n`);
+	});
+
+	it("releases its installation lock after a terminal hangup", async () => {
+		const harness = join(root, "hangup.sh");
+		writeFileSync(
+			harness,
+			readFileSync(installer, "utf8").replace(
+				/\nmain "\$@"\s*$/,
+				() => '\nprime_agent_install_traps\nprime_agent_native_prepare_root\nkill -HUP "$$"\n',
+			),
+		);
+		const result = await install("", {}, harness);
+		expect(result.code, result.output).toBe(129);
+		expect(existsSync(join(home, "data/prime-agent/.install-lock"))).toBe(false);
+	});
+
+	it("reports the supported native platform without installation or release discovery", async () => {
+		const result = await install("--native-platform", { PRIME_AGENT_DOWNLOAD_BASE_URL: "http://127.0.0.1:1" });
+		expect(result).toEqual({ code: 0, output: platform });
+		expect(existsSync(join(home, "data/prime-agent"))).toBe(false);
 	});
 
 	it.skipIf(!process.env.PRIME_AGENT_TEST_ARCHIVE)(
