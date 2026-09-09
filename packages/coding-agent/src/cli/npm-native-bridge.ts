@@ -43,6 +43,7 @@ function migrationTarget(): string | undefined {
 	if (!commandName || basename(commandName) !== commandName) return undefined;
 	const publicCommand = join(dirname(dirname(modules)), "bin", commandName);
 	const commandIdentity = lstatSync(publicCommand);
+	const commandTarget = commandIdentity.isSymbolicLink() ? readlinkSync(publicCommand) : undefined;
 	const entryIdentity = statSync(entrypoint);
 	const root =
 		process.env.PRIME_AGENT_INSTALL_DIR ||
@@ -115,7 +116,13 @@ function migrationTarget(): string | undefined {
 		renameSync(publicCommand, captured);
 		needsRestore = true;
 		const capturedIdentity = lstatSync(captured);
-		capturedOwned = capturedIdentity.dev === commandIdentity.dev && capturedIdentity.ino === commandIdentity.ino;
+		capturedOwned =
+			capturedIdentity.dev === commandIdentity.dev &&
+			capturedIdentity.ino === commandIdentity.ino &&
+			capturedIdentity.mtimeMs === commandIdentity.mtimeMs &&
+			commandTarget !== undefined &&
+			capturedIdentity.isSymbolicLink() &&
+			readlinkSync(captured) === commandTarget;
 		const currentEntry = statSync(entrypoint);
 		if (
 			!capturedOwned ||

@@ -156,7 +156,7 @@ describe.skipIf(process.platform === "win32")("npm release bridge", () => {
 		expect(realpathSync(publicCommand)).toBe(entry);
 	});
 
-	it.each(["capture", "create", "package"])(
+	it.each(["capture", "create", "package", "reused inode"])(
 		"preserves a competing npm installation during command %s",
 		async (phase) => {
 			native();
@@ -174,6 +174,10 @@ const replacement = ${JSON.stringify(replacement)};
 const phase = ${JSON.stringify(phase)};
 const rename = fs.renameSync;
 const symlink = fs.symlinkSync;
+const lstat = fs.lstatSync;
+const originalCommand = lstat(command);
+fs.lstatSync = (path, ...options) =>
+  phase === "reused inode" && String(path).endsWith("/command") ? originalCommand : lstat(path, ...options);
 fs.renameSync = (source, destination) => {
   if (phase !== "create" && (source === command || destination === command)) {
     if (phase === "package") {
