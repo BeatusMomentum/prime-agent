@@ -1,0 +1,1 @@
+- Added verified updates and offline rollback for compiled Prime Agent installations, preserving sessions and restarting with the activated release.

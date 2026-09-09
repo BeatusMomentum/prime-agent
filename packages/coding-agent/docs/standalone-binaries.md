@@ -76,4 +76,12 @@ Releases containing native archives also include a bridge at the existing npm CL
 
 Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
 
-Compiled self-update and rollback are handled by the final layer of the rollout. Homebrew packaging remains separate work.
+Failed automatic migrations retry after 24 hours; `PRIME_AGENT_MIGRATE_RETRY=1` retries immediately. Homebrew packaging remains separate work.
+
+## Updates and rollback
+
+Run `prime-agent update` or `/update` to install the latest version on the current stable or beta channel. Managed compiled installations require a matching platform entry in the release manifest and verify its SHA-256 against both the release checksums and downloaded archive. Failed downloads or validation leave the current executable and assets active. Unmanaged archives must be updated through their original installer.
+
+Updates retain the previous release, preserve user configuration and sessions, and use the existing busy-session confirmation and daemon restart coordination. Relaunches resolve the stable launcher after activation, so the new process runs the updated application. The installer checks that the active release has not changed since the update was planned and serializes activation with its installation lock.
+
+Run `prime-agent update --rollback` or `/update --rollback` to restore the previous local release without downloading anything. Its executable and assets are validated before switching. A second rollback restores the release you just left. Rollback requires a retained release and applies only to managed compiled installations. `--force` permits reinstalling the version selected by the release channel.

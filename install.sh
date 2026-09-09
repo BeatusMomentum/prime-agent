@@ -61,6 +61,10 @@ prime_agent_native_stage=
 prime_agent_native_lock=
 
 main() {
+	if [ "${1:-}" = --rollback ]; then
+		prime_agent_native_rollback
+		return
+	fi
 	case "${PRIME_AGENT_INSTALL_METHOD:-auto}" in
 		auto|binary|node) ;;
 		*) printf 'error: PRIME_AGENT_INSTALL_METHOD must be auto, binary or node.\n' >&2; exit 1 ;;
@@ -1728,6 +1732,32 @@ prime_agent_native_prepare_root() {
 		fi
 	done
 	prime_agent_native_stage=$(mktemp -d "$native_root/.install.XXXXXX")
+	if [ -n "${PRIME_AGENT_EXPECTED_CURRENT:-}" ] && [ "$(readlink "$native_root/bin/prime-agent" 2>/dev/null || :)" != "$PRIME_AGENT_EXPECTED_CURRENT" ]; then
+		printf 'error: the active release changed; retry the update.\n' >&2; exit 1
+	fi
+}
+
+prime_agent_native_rollback() {
+	prime_agent_install_traps
+	prime_agent_native_prepare_root
+	[ -L "$native_root/bin/previous" ] || { printf 'error: no previous compiled release is available.\n' >&2; exit 1; }
+	native_previous=$(readlink "$native_root/bin/previous")
+	native_current=$(readlink "$native_root/bin/prime-agent")
+	if [ -n "${PRIME_AGENT_EXPECTED_PREVIOUS:-}" ] && [ "$native_previous" != "$PRIME_AGENT_EXPECTED_PREVIOUS" ]; then
+		printf 'error: the previous release changed while planning rollback; retry.\n' >&2; exit 1
+	fi
+	[ "$native_previous" != "$native_current" ] || { printf 'error: no different previous release is available.\n' >&2; exit 1; }
+	native_previous_dir="$native_root/bin/${native_previous%/prime-agent}"
+	[ ! -L "$native_previous_dir" ] && [ -d "$native_previous_dir" ] || { printf 'error: invalid previous release directory.\n' >&2; exit 1; }
+	for native_asset in prime-agent package.json install.sh prime-agent-runtime/pyproject.toml prime-agent-runtime/src/rlm/repl.py theme/prime.json export-html/template.html photon_rs_bg.wasm .archive-sha256 .install-source; do
+		[ -f "$native_previous_dir/$native_asset" ] && [ ! -L "$native_previous_dir/$native_asset" ] || { printf 'error: missing previous release asset: %s\n' "$native_asset" >&2; exit 1; }
+	done
+	"$native_previous_dir/prime-agent" --version
+	"$native_previous_dir/prime-agent" --help >/dev/null
+	prime_agent_native_atomic_link "$native_current" "$native_root/bin/previous"
+	prime_agent_native_atomic_link "$native_previous" "$native_root/bin/prime-agent"
+	printf 'Restored the previous compiled release.\n'
+	prime_agent_native_cleanup
 }
 
 prime_agent_native_valid_target() {
@@ -1801,6 +1831,9 @@ prime_agent_install_native() {
 		"$native_checksums" >"$prime_agent_native_stage/selected.sha256" || {
 		printf 'error: expected one valid checksum for %s.\n' "$native_file" >&2; exit 1;
 	}
+	if [ -n "${PRIME_AGENT_EXPECTED_SHA256:-}" ] && [ "$(awk '{print $1}' "$prime_agent_native_stage/selected.sha256")" != "$PRIME_AGENT_EXPECTED_SHA256" ]; then
+		printf 'error: release manifest and checksum inventory disagree.\n' >&2; exit 1
+	fi
 	prime_agent_run_quiet_with_animation "Downloading Prime Agent" "Downloading compiled Prime Agent" "$native_platform" \
 		curl -fsSL --connect-timeout 10 --max-time 300 "$prime_agent_base_url/releases/v$native_version/$native_file" -o "$native_archive"
 	if command -v sha256sum >/dev/null 2>&1; then native_checker=sha256sum; else native_checker=shasum; fi

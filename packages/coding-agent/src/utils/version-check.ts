@@ -9,6 +9,13 @@ export interface LatestPiRelease {
 	version: string;
 	packageName?: string;
 	installSpec?: string;
+	binaries?: NativeReleaseArtifact[];
+}
+
+export interface NativeReleaseArtifact {
+	platform: string;
+	file: string;
+	sha256: string;
 }
 
 interface ParsedVersion {
@@ -113,11 +120,11 @@ function resolveReleaseUrl(baseUrl: string, pathOrUrl: string): string | undefin
 
 export async function getLatestPiRelease(
 	currentVersion: string,
-	options: { timeoutMs?: number } = {},
+	options: { timeoutMs?: number; baseUrl?: string } = {},
 ): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
 
-	const baseUrl = getPrimeAgentDownloadBaseUrl();
+	const baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? getPrimeAgentDownloadBaseUrl();
 	const response = await fetch(`${baseUrl}/${getReleaseManifestPath(currentVersion)}`, {
 		headers: {
 			"User-Agent": getPiUserAgent(currentVersion),
@@ -132,6 +139,7 @@ export async function getLatestPiRelease(
 		packageName?: unknown;
 		tarball?: unknown;
 		version?: unknown;
+		binaries?: unknown;
 	};
 	if (typeof data.version !== "string" || !data.version.trim()) {
 		return undefined;
@@ -149,6 +157,26 @@ export async function getLatestPiRelease(
 	}
 	if (installSpec) {
 		release.installSpec = installSpec;
+	}
+	if (Array.isArray(data.binaries)) {
+		const binaries: NativeReleaseArtifact[] = [];
+		const platforms = new Set<string>();
+		for (const candidate of data.binaries) {
+			if (!candidate || typeof candidate !== "object") throw new Error("Invalid compiled release manifest");
+			const artifact = candidate as Partial<NativeReleaseArtifact>;
+			if (
+				typeof artifact.platform !== "string" ||
+				!/^(darwin|linux)-(arm64|x64)$/.test(artifact.platform) ||
+				platforms.has(artifact.platform) ||
+				artifact.file !== `prime-agent-${release.version}-${artifact.platform}.tar.gz` ||
+				typeof artifact.sha256 !== "string" ||
+				!/^[a-f0-9]{64}$/.test(artifact.sha256)
+			)
+				throw new Error("Invalid compiled release manifest");
+			platforms.add(artifact.platform);
+			binaries.push({ platform: artifact.platform, file: artifact.file, sha256: artifact.sha256 });
+		}
+		release.binaries = binaries;
 	}
 	return release;
 }

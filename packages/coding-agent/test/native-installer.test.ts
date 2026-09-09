@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readlinkSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -13,7 +14,9 @@ import {
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getNativeUpdatePlan } from "../src/cli/native-update.js";
+import { DaemonClient } from "../src/modes/daemon/daemon-client.js";
 
 const installer = resolve(__dirname, "../../../install.sh");
 const assets = [
@@ -43,6 +46,8 @@ function publish(version: string, options: { broken?: boolean; missing?: boolean
 		mkdirSync(dirname(join(source, asset)), { recursive: true });
 		writeFileSync(join(source, asset), "fixture\n");
 	}
+	writeFileSync(join(source, "package.json"), JSON.stringify({ version }));
+	writeFileSync(join(source, "install.sh"), readFileSync(installer));
 	writeFileSync(
 		join(source, "prime-agent"),
 		options.broken ? "#!/bin/sh\nexit 1\n" : `#!/bin/sh\nprintf '%s\\n' '${version}'\n`,
@@ -56,14 +61,29 @@ function publish(version: string, options: { broken?: boolean; missing?: boolean
 	const digest = createHash("sha256").update(bytes).digest("hex");
 	feed.set(`/releases/v${version}/${filename}`, bytes);
 	feed.set(`/releases/v${version}/SHA256SUMS`, Buffer.from(`${digest}  ${filename}\n`));
+	feed.set(
+		version.includes("-beta") ? "/beta.json" : "/latest.json",
+		Buffer.from(
+			JSON.stringify({
+				version,
+				binaries: [{ platform, file: filename, sha256: digest }],
+			}),
+		),
+	);
 	return filename;
 }
 
 async function install(version: string, extra: NodeJS.ProcessEnv = {}) {
-	const child = spawn("sh", [installer, version], {
+	return run("sh", [installer, version], extra);
+}
+
+async function run(executable: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
+	const child = spawn(executable, args, {
+		cwd: home,
 		env: {
 			...process.env,
 			HOME: home,
+			TMPDIR: root,
 			PATH: "/usr/bin:/bin",
 			XDG_DATA_HOME: join(home, "data"),
 			SHELL: "/bin/sh",
@@ -72,6 +92,8 @@ async function install(version: string, extra: NodeJS.ProcessEnv = {}) {
 			PRIME_AGENT_INSTALLER_PLAIN: "1",
 			PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL: "0",
 			PRIME_AGENT_DOWNLOAD_BASE_URL: base,
+			PRIME_AGENT_CODING_AGENT_DIR: join(home, "agent"),
+			DO_NOT_TRACK: "1",
 			...extra,
 		},
 		stdio: ["ignore", "pipe", "pipe"],
@@ -93,9 +115,23 @@ function command() {
 	return join(home, "data/prime-agent/bin/prime-agent");
 }
 
+function daemonSocket() {
+	return join(root, `prime-agent-${process.getuid?.() ?? "user"}`, "daemon.sock");
+}
+
+async function daemonExecutable() {
+	const client = new DaemonClient(daemonSocket());
+	try {
+		await client.connect();
+		return (await client.waitForHello()).runtime?.executablePath;
+	} finally {
+		client.close();
+	}
+}
+
 describe.skipIf(process.platform === "win32")("managed compiled installer", () => {
 	beforeAll(async () => {
-		root = mkdtempSync(join(tmpdir(), "native-installer-"));
+		root = realpathSync(mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "native-installer-")));
 		await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("missing server address");
@@ -104,6 +140,35 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 	beforeEach(() => {
 		home = mkdtempSync(join(root, "home with spaces-"));
 		feed.clear();
+		vi.stubEnv("PI_OFFLINE", "");
+		vi.stubEnv("PI_SKIP_VERSION_CHECK", "");
+		vi.stubEnv("PRIME_AGENT_DOWNLOAD_BASE_URL", "");
+	});
+	afterEach(async () => {
+		vi.unstubAllEnvs();
+		if (!existsSync(daemonSocket())) return;
+		const client = new DaemonClient(daemonSocket());
+		try {
+			await client.connect();
+			const hello = await client.waitForHello();
+			await client.request({ type: "shutdown", force: true });
+			if (hello.supervisorPid)
+				await expect
+					.poll(
+						() => {
+							try {
+								process.kill(hello.supervisorPid!, 0);
+								return false;
+							} catch {
+								return true;
+							}
+						},
+						{ timeout: 10000 },
+					)
+					.toBe(true);
+		} finally {
+			client.close();
+		}
 	});
 	afterAll(async () => {
 		await new Promise<void>((done) => server.close(() => done()));
@@ -152,6 +217,91 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 		},
 	);
 
+	it("plans verified updates and restores the previous release offline", async () => {
+		publish("1.0.0");
+		expect((await install("1.0.0")).code).toBe(0);
+		const executable = realpathSync(command());
+		const plan = (force = false, rollback = false) => getNativeUpdatePlan({ force, rollback, executable });
+		expect((await plan()).command).toBeUndefined();
+		expect((await plan(true)).command).toBeDefined();
+		await expect(plan(false, true)).rejects.toThrow("No valid previous");
+		publish("1.0.1");
+		const update = await plan();
+		expect(update.targetVersion).toBe("1.0.1");
+		expect(update.command?.args).toContain(`PRIME_AGENT_EXPECTED_CURRENT=${readlinkSync(command())}`);
+		expect(update.command?.args).toContainEqual(expect.stringMatching(/^PRIME_AGENT_EXPECTED_SHA256=[a-f0-9]{64}$/));
+		const result = await install("1.0.1");
+		expect(result.code, result.output).toBe(0);
+		const current = readlinkSync(command());
+		feed.clear();
+		vi.stubEnv("PI_OFFLINE", "1");
+		const rollback = await plan(false, true);
+		expect(rollback.targetVersion).toBe("1.0.0");
+		expect(rollback.command?.args.at(-1)).toBe("--rollback");
+		const restored = await install("--rollback");
+		expect(restored.code, restored.output).toBe(0);
+		expect(execFileSync(command(), ["--version"], { encoding: "utf8" })).toBe("1.0.0\n");
+		expect(readlinkSync(join(dirname(command()), "previous"))).toBe(current);
+	});
+
+	it.each(["missing", "checksum", "duplicate", "path"])(
+		"rejects a %s compiled manifest without changing the installation",
+		async (failure) => {
+			publish("1.0.0");
+			expect((await install("1.0.0")).code).toBe(0);
+			const current = readlinkSync(command());
+			const artifact = { platform, file: `prime-agent-1.0.1-${platform}.tar.gz`, sha256: "a".repeat(64) };
+			if (failure === "checksum") artifact.sha256 = "bad";
+			if (failure === "path") artifact.file = "../outside.tar.gz";
+			feed.set(
+				"/latest.json",
+				Buffer.from(
+					JSON.stringify({
+						version: "1.0.1",
+						binaries: failure === "missing" ? [] : failure === "duplicate" ? [artifact, artifact] : [artifact],
+					}),
+				),
+			);
+			await expect(
+				getNativeUpdatePlan({ force: false, rollback: false, executable: realpathSync(command()) }),
+			).rejects.toThrow();
+			expect(readlinkSync(command())).toBe(current);
+		},
+	);
+
+	it("keeps beta updates on the beta channel", async () => {
+		publish("1.0.0-beta.1");
+		expect((await install("1.0.0-beta.1")).code).toBe(0);
+		publish("1.0.0-beta.2");
+		publish("9.0.0");
+		const plan = await getNativeUpdatePlan({ force: false, rollback: false, executable: realpathSync(command()) });
+		expect(plan.targetVersion).toBe("1.0.0-beta.2");
+	});
+
+	it.each(["stale", "checksum", "rollback"])(
+		"keeps the active release when %s update validation fails",
+		async (failure) => {
+			publish("1.0.0");
+			expect((await install("1.0.0")).code).toBe(0);
+			const current = readlinkSync(command());
+			publish("1.0.1");
+			const result = await install(
+				failure === "rollback" ? "--rollback" : "1.0.1",
+				failure === "stale"
+					? { PRIME_AGENT_EXPECTED_CURRENT: "an older release" }
+					: { PRIME_AGENT_EXPECTED_SHA256: "0".repeat(64) },
+			);
+			expect(result.code, result.output).not.toBe(0);
+			expect(readlinkSync(command())).toBe(current);
+		},
+	);
+
+	it("refuses self-update of an unmanaged executable", async () => {
+		await expect(getNativeUpdatePlan({ force: true, rollback: false, executable: process.execPath })).rejects.toThrow(
+			"not owned",
+		);
+	});
+
 	it("refuses to replace an unrelated public command", async () => {
 		publish("1.0.0");
 		mkdirSync(join(home, ".local/bin"), { recursive: true });
@@ -176,7 +326,7 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 	});
 
 	it.skipIf(!process.env.PRIME_AGENT_TEST_ARCHIVE)(
-		"installs the actual compiled release archive",
+		"installs, updates, and rolls back actual compiled releases without Node",
 		async () => {
 			const archive = process.env.PRIME_AGENT_TEST_ARCHIVE!;
 			const name = basename(archive);
@@ -188,7 +338,65 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 			expect(
 				execFileSync(command(), ["--version"], { encoding: "utf8", env: { HOME: home, PATH: "/usr/bin:/bin" } }),
 			).toBe(`${version}\n`);
+			const previous = readlinkSync(command());
+			const source = mkdtempSync(join(root, "real-release-"));
+			execFileSync("tar", ["-xzf", archive, "-C", source]);
+			const metadata = JSON.parse(readFileSync(join(source, "package.json"), "utf8")) as { version: string };
+			metadata.version = "99.0.0";
+			writeFileSync(join(source, "package.json"), JSON.stringify(metadata));
+			const nextFile = `prime-agent-99.0.0-${platform}.tar.gz`;
+			const nextArchive = join(root, nextFile);
+			execFileSync("tar", ["-czf", nextArchive, "-C", source, "."]);
+			const bytes = readFileSync(nextArchive);
+			const sha256 = createHash("sha256").update(bytes).digest("hex");
+			feed.set(`/releases/v99.0.0/${nextFile}`, bytes);
+			feed.set("/releases/v99.0.0/SHA256SUMS", Buffer.from(`${sha256}  ${nextFile}\n`));
+			feed.set(
+				"/latest.json",
+				Buffer.from(JSON.stringify({ version: "v99.0.0", binaries: [{ platform, file: nextFile, sha256 }] })),
+			);
+			mkdirSync(join(home, "agent"), { recursive: true });
+			writeFileSync(join(home, "agent/auth.json"), "{}\n");
+			writeFileSync(
+				join(home, "extension.ts"),
+				readFileSync(resolve(__dirname, "fixtures/compiled-artifact-extension.ts")),
+			);
+			const session = await run(command(), [
+				"--offline",
+				"--no-context-files",
+				"--no-extensions",
+				"-e",
+				join(home, "extension.ts"),
+				"--provider",
+				"artifact-faux",
+				"--model",
+				"artifact",
+				"--no-tools",
+				"-p",
+				"test update",
+			]);
+			expect(session.code, session.output).toBe(0);
+			expect(session.output).toContain("artifact-ok:");
+			expect(await daemonExecutable()).toBe(realpathSync(command()));
+			const updated = await run(command(), ["update"]);
+			expect(updated.code, updated.output).toBe(0);
+			expect(updated.output).toContain("to v99.0.0");
+			expect(updated.output).not.toContain("Warning:");
+			expect((await run(command(), ["--version"])).output).toBe("99.0.0\n");
+			expect(await daemonExecutable()).toBe(realpathSync(command()));
+			expect(readlinkSync(join(dirname(command()), "previous"))).toBe(previous);
+			const unchanged = await run(command(), ["update"]);
+			expect(unchanged.code, unchanged.output).toBe(0);
+			expect(unchanged.output).toContain("already up to date");
+			feed.clear();
+			const restored = await run(command(), ["update", "--rollback"], { PI_OFFLINE: "1" });
+			expect(restored.code, restored.output).toBe(0);
+			expect(restored.output).not.toContain("Warning:");
+			expect(readlinkSync(command())).toBe(previous);
+			expect(await daemonExecutable()).toBe(realpathSync(command()));
+			expect((await run(command(), ["--version"])).output).toBe(`${version}\n`);
+			expect(readFileSync(join(home, "agent/auth.json"), "utf8")).toBe("{}\n");
 		},
-		60000,
+		120000,
 	);
 });
