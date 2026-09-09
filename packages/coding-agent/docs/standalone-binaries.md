@@ -91,3 +91,11 @@ Run `prime-agent update` or `/update` to install the latest version on the curre
 Updates retain the previous release, preserve user configuration and sessions, and use the existing busy-session confirmation and daemon restart coordination. Relaunches resolve the stable launcher after activation, so the new process runs the updated application. The installer checks that the active release has not changed since the update was planned and serializes activation with its installation lock.
 
 Run `prime-agent update --rollback` or `/update --rollback` to restore the previous local release without downloading anything. Its executable and assets are validated before switching. A second rollback restores the release you just left. Rollback requires a retained release and applies only to managed compiled installations. `--force` permits reinstalling the version selected by the release channel.
+
+## Coverage and recovery limits
+
+Native CI runs the extracted archives on macOS 15 (ARM64 and x64) and Ubuntu 24.04 (ARM64 and x64). It tests installation, forced reinstall, later update, offline rollback, daemon replacement, runtime assets, RPC, and managed Python without JavaScript runtimes on the application PATH. The installer selects macOS 13+ and compatible glibc Linux, but these selection checks do not constitute execution testing on every older OS release.
+
+Focused regressions cover migration without lifecycle scripts, incompatible existing binaries, deferred migration during internal daemon startup, competing installs and npm command handoffs, checksum/manifest failures, missing assets, and failed rollback. Normal installer hangups release the lock. A forced kill or power loss can still require manual lock or captured-command recovery; complete power-loss, disk-exhaustion, ACL, and network-filesystem fault testing is outside this matrix.
+
+Rollback restores application files, not arbitrary future user-data schema changes. SHA-256 verification detects archive/metadata disagreement; it does not introduce an independent release-signing authority. Shell aliases and earlier competing PATH entries are not rewritten. The Node fallback package and old compiled release directories remain on disk.
