@@ -1,2 +1,3 @@
 - Added migration from global npm installations to compiled releases during the next launch after an update, preserving settings and a Node fallback when migration cannot run.
 - Fixed migration to preserve a newer compiled installation activated by a competing update.
+- Fixed automatic migration delaying daemon startup, reusing incompatible compiled releases, and replacing a concurrent npm command.
