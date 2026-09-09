@@ -321,6 +321,33 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 		expect(existsSync(join(home, ".local/outside"))).toBe(false);
 	});
 
+	it.each(["", "../releases/an-earlier-install/prime-agent"])(
+		"rejects a stale migration expectation (%s)",
+		async (expected) => {
+			publish("1.0.1");
+			publish("1.0.0");
+			expect((await install("1.0.1")).code).toBe(0);
+			const active = readlinkSync(command());
+			const result = await install("1.0.0", { PRIME_AGENT_EXPECTED_CURRENT: expected });
+			expect(result.code, result.output).not.toBe(0);
+			expect(readlinkSync(command())).toBe(active);
+		},
+	);
+
+	it("repairs missing assets on reinstall without replacing files used by an existing process", async () => {
+		publish("1.0.0");
+		expect((await install("1.0.0")).code).toBe(0);
+		const previous = readlinkSync(command());
+		const oldRelease = dirname(realpathSync(command()));
+		rmSync(join(oldRelease, "theme/prime.json"));
+		const result = await install("1.0.0");
+		expect(result.code, result.output).toBe(0);
+		expect(readlinkSync(command())).not.toBe(previous);
+		expect(readFileSync(join(dirname(realpathSync(command())), "theme/prime.json"), "utf8")).toBe("fixture\n");
+		expect(existsSync(join(oldRelease, "theme/prime.json"))).toBe(false);
+		expect(readlinkSync(join(dirname(command()), "previous"))).toBe(previous);
+	});
+
 	it("does not steal another installation's lock", async () => {
 		publish("1.0.0");
 		const first = await install("1.0.0");

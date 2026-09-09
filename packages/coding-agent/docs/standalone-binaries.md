@@ -68,6 +68,8 @@ Set `PRIME_AGENT_INSTALL_METHOD=node` to explicitly keep the Node installation, 
 
 Each release keeps its executable and assets together under `releases/`. The stable `bin/prime-agent` link changes only after validation, and `bin/previous` retains the earlier release. The installer serializes changes with `.install-lock`; normal interruption cleans up the lock. After a forced kill, confirm its recorded process is no longer running before removing the stale lock. User data remains in `~/.prime/agent`.
 
+Reinstalling the same archive creates a fresh release directory with a unique suffix, so it can repair missing or changed assets without modifying files used by existing processes. Old release directories are retained; there is no automatic garbage collection yet.
+
 The installer still shows download and verification progress and can prepare Python. Compilation removes JavaScript dependency installation; Python and external tools still need preparation. Set `PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0` to defer Python setup.
 
 ## Migration from npm
@@ -75,6 +77,8 @@ The installer still shows download and verification progress and can prepare Pyt
 Releases containing native archives also include a bridge at the existing npm CLI entrypoint. An old version can install that release through its existing updater; its next launch (including the daemon restart coordinator) downloads and verifies the compiled application. The bridge only migrates conventional global npm installs whose command still points to that package. It then replaces that owned command link with the managed native launcher, so subsequent launches do not require Node. Existing Node files and shared runtimes are retained.
 
 Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
+
+Migration reuses an equal or newer managed release. It also checks the captured active release after acquiring the installer lock: if another install wins the race, migration defers to the Node application instead of overwriting that install. The next launch can adopt the newer managed release.
 
 Failed automatic migrations retry after 24 hours; `PRIME_AGENT_MIGRATE_RETRY=1` retries immediately. Homebrew packaging remains separate work.
 

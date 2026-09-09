@@ -22,7 +22,7 @@ export function readNativeInstallation(root: string, link = "prime-agent"): Nati
 		const launcher = join(root, "bin", link);
 		const target = readlinkSync(launcher);
 		const match =
-			/^\.\.\/releases\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-(darwin|linux)-(arm64|x64)-([a-f0-9]{64})\/prime-agent$/.exec(
+			/^\.\.\/releases\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-(darwin|linux)-(arm64|x64)-([a-f0-9]{64})(?:\.[A-Za-z0-9]{6})?\/prime-agent$/.exec(
 				target,
 			);
 		if (!match) return undefined;
