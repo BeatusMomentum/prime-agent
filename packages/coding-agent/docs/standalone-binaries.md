@@ -70,4 +70,10 @@ Each release keeps its executable and assets together under `releases/`. The sta
 
 The installer still shows download and verification progress and can prepare Python. Compilation removes JavaScript dependency installation; Python and external tools still need preparation. Set `PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0` to defer Python setup.
 
-Existing npm installations and the in-app updater are handled by the next layers of the rollout. Homebrew packaging remains separate work.
+## Migration from npm
+
+Releases containing native archives also include a bridge at the existing npm CLI entrypoint. An old version can install that release through its existing updater; its next launch (including the daemon restart coordinator) downloads and verifies the compiled application. The bridge only migrates conventional global npm installs whose command still points to that package. It then replaces that owned command link with the managed native launcher, so subsequent launches do not require Node. Existing Node files and shared runtimes are retained.
+
+Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
+
+Compiled self-update and rollback are handled by the final layer of the rollout. Homebrew packaging remains separate work.
