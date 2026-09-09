@@ -302,6 +302,29 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 		);
 	});
 
+	it.each(["changed previous", "missing asset", "broken executable"])(
+		"preserves the active release when rollback finds a %s",
+		async (failure) => {
+			publish("1.0.0");
+			expect((await install("1.0.0")).code).toBe(0);
+			const previousDir = dirname(realpathSync(command()));
+			publish("1.0.1");
+			expect((await install("1.0.1")).code).toBe(0);
+			const current = readlinkSync(command());
+			const previous = readlinkSync(join(dirname(command()), "previous"));
+			if (failure === "missing asset") rmSync(join(previousDir, "theme/prime.json"));
+			if (failure === "broken executable") writeFileSync(join(previousDir, "prime-agent"), "#!/bin/sh\nexit 1\n");
+			const result = await install(
+				"--rollback",
+				failure === "changed previous" ? { PRIME_AGENT_EXPECTED_PREVIOUS: "an older release" } : {},
+			);
+			expect(result.code, result.output).not.toBe(0);
+			expect(readlinkSync(command())).toBe(current);
+			expect(readlinkSync(join(dirname(command()), "previous"))).toBe(previous);
+			expect(execFileSync(command(), ["--version"], { encoding: "utf8" })).toBe("1.0.1\n");
+		},
+	);
+
 	it("refuses to replace an unrelated public command", async () => {
 		publish("1.0.0");
 		mkdirSync(join(home, ".local/bin"), { recursive: true });
@@ -374,6 +397,26 @@ describe.skipIf(process.platform === "win32")("managed compiled installer", () =
 			expect(
 				execFileSync(command(), ["--version"], { encoding: "utf8", env: { HOME: home, PATH: "/usr/bin:/bin" } }),
 			).toBe(`${version}\n`);
+			const originalTarget = readlinkSync(command());
+			feed.set(
+				"/latest.json",
+				Buffer.from(
+					JSON.stringify({
+						version,
+						binaries: [
+							{ platform, file: name, sha256: createHash("sha256").update(readFileSync(archive)).digest("hex") },
+						],
+					}),
+				),
+			);
+			const reinstalled = await run(command(), ["update", "--force"]);
+			expect(reinstalled.code, reinstalled.output).toBe(0);
+			expect(reinstalled.output).not.toContain("Warning:");
+			expect(readlinkSync(command())).not.toBe(originalTarget);
+			expect(readlinkSync(command())).toMatch(/\.[A-Za-z0-9]{6}\/prime-agent$/);
+			const repaired = await run(command(), ["update"]);
+			expect(repaired.code, repaired.output).toBe(0);
+			expect(repaired.output).toContain("already up to date");
 			const previous = readlinkSync(command());
 			const source = mkdtempSync(join(root, "real-release-"));
 			execFileSync("tar", ["-xzf", archive, "-C", source]);
