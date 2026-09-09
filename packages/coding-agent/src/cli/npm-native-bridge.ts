@@ -11,7 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readNativeInstallation } from "../utils/native-installation.js";
 import { comparePackageVersions } from "../utils/version-check.js";
@@ -62,6 +62,7 @@ function migrationTarget(): string | undefined {
 				...process.env,
 				PRIME_AGENT_INSTALL_METHOD: "binary",
 				PRIME_AGENT_INSTALL_DIR: root,
+				PRIME_AGENT_EXPECTED_CURRENT: native ? relative(join(native.root, "bin"), native.executable) : "",
 				PRIME_AGENT_DOWNLOAD_BASE_URL: release.baseUrl,
 				PRIME_AGENT_INSTALL_LINK: "0",
 				PRIME_AGENT_INSTALLER_NONINTERACTIVE: "1",

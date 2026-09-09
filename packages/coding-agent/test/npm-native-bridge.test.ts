@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -22,10 +23,11 @@ let pkg: string;
 let entry: string;
 let publicCommand: string;
 
-function native(version = "1.0.0") {
+function native(version = "1.0.0", suffix = "") {
 	const install = join(home, "data/prime-agent");
 	const digest = "a".repeat(64);
-	const release = join(install, `releases/${version}-${process.platform}-${process.arch}-${digest}`);
+	const name = `${version}-${process.platform}-${process.arch}-${digest}${suffix}`;
+	const release = join(install, "releases", name);
 	mkdirSync(release, { recursive: true });
 	mkdirSync(join(install, "bin"), { recursive: true });
 	writeFileSync(join(install, ".managed"), "prime-agent-native-v1\n");
@@ -37,10 +39,8 @@ function native(version = "1.0.0") {
 		`#!/bin/sh\nif [ "$1" = fail ]; then exit 23; fi\nif [ "$1" = --version ]; then echo ${version}; exit; fi\nprintf "native:%s\\n" "$@"\n`,
 		{ mode: 0o755 },
 	);
-	symlinkSync(
-		`../releases/${version}-${process.platform}-${process.arch}-${digest}/prime-agent`,
-		join(install, "bin/prime-agent"),
-	);
+	rmSync(join(install, "bin/prime-agent"), { force: true });
+	symlinkSync(`../releases/${name}/prime-agent`, join(install, "bin/prime-agent"));
 	return realpathSync(join(install, "bin/prime-agent"));
 }
 
@@ -119,7 +119,53 @@ describe.skipIf(process.platform === "win32")("npm release bridge", () => {
 		native("1.0.1");
 		expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "1.0.1\n" });
 	});
+	it.each([undefined, "0.9.0"])("preserves a competing newer install while migrating from %s", async (previous) => {
+		await withReleaseFeed(async () => {
+			if (previous) native(previous);
+			const ready = join(root, "ready");
+			const proceed = join(root, "proceed");
+			const shim = join(root, "shim");
+			mkdirSync(shim);
+			writeFileSync(
+				join(shim, "sh"),
+				'#!/bin/sh\ntouch "$BRIDGE_READY"\nwhile [ ! -e "$BRIDGE_PROCEED" ]; do sleep 0.02; done\nexec /bin/sh "$@"\n',
+				{ mode: 0o755 },
+			);
+			const pending = run(["--version"], {
+				PATH: `${shim}:/usr/bin:/bin`,
+				BRIDGE_READY: ready,
+				BRIDGE_PROCEED: proceed,
+			});
+			let newer: string | undefined;
+			try {
+				await expect.poll(() => existsSync(ready), { timeout: 5000 }).toBe(true);
+				newer = native("1.0.1");
+			} finally {
+				writeFileSync(proceed, "");
+			}
+			expect(await pending).toMatchObject({ code: 0, stdout: "node:--version\n" });
+			expect(realpathSync(join(home, "data/prime-agent/bin/prime-agent"))).toBe(newer);
+			expect(realpathSync(publicCommand)).toBe(entry);
+			expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "1.0.1\n" });
+		});
+	});
+
+	it("recognizes a fresh reinstall directory", async () => {
+		const executable = native("1.0.0", ".AbC123");
+		expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "1.0.0\n" });
+		expect(realpathSync(publicCommand)).toBe(executable);
+	});
+
 	it("downloads and activates through the shipped installer without npm lifecycle scripts", async () => {
+		await withReleaseFeed(async (checksum) => {
+			expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "1.0.0\n", stderr: "" });
+			expect(realpathSync(publicCommand)).toContain(
+				`/releases/1.0.0-${process.platform}-${process.arch}-${checksum}/`,
+			);
+		});
+	});
+
+	async function withReleaseFeed(test: (checksum: string) => Promise<void>) {
 		const executable = native();
 		const release = dirname(executable);
 		for (const asset of [
@@ -150,14 +196,11 @@ describe.skipIf(process.platform === "win32")("npm release bridge", () => {
 				join(pkg, "dist/native-release.json"),
 				JSON.stringify({ baseUrl: `http://127.0.0.1:${address.port}` }),
 			);
-			expect(await run(["--version"])).toMatchObject({ code: 0, stdout: "1.0.0\n", stderr: "" });
-			expect(realpathSync(publicCommand)).toContain(
-				`/releases/1.0.0-${process.platform}-${process.arch}-${checksum}/`,
-			);
+			await test(checksum);
 		} finally {
 			await new Promise<void>((done) => server.close(() => done()));
 		}
-	});
+	}
 	it("preserves the native exit status", async () => {
 		native();
 		expect((await run(["fail"])).code).toBe(23);

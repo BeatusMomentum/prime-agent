@@ -78,4 +78,6 @@ Releases containing native archives also include a bridge at the existing npm CL
 
 Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
 
+Migration reuses an equal or newer managed release. It also checks the captured active release after acquiring the installer lock: if another install wins the race, migration defers to the Node application instead of overwriting that install. The next launch can adopt the newer managed release.
+
 Compiled self-update and rollback are handled by the final layer of the rollout. Homebrew packaging remains separate work.
