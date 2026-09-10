@@ -6,7 +6,7 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, ServiceTier, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, ServiceTier } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, cleanupSessionResources, supportsFastMode } from "@earendil-works/pi-ai";
 import { GoalController } from "../goals/controller.js";
 import { createGoalPersistence } from "../goals/persistence.js";
@@ -730,7 +730,7 @@ export class AgentSession {
 			getMessages: () => this.messages,
 			getModel: () => this.model,
 			findModel: (provider, modelId) => this._modelRegistry.find(provider, modelId),
-			getUnindexedChildUsage: (message) => this._getUnindexedChildUsage(message),
+			subtractUnindexedChildUsage: (ownUsage, entries) => this._childUsage.subtractUnindexed(ownUsage, entries),
 			getRlmSessionDir: () => this._rlmSessionDirForReading(),
 			getLiveChildren: () => this._contextViewChildren(),
 		});
@@ -2852,9 +2852,6 @@ export class AgentSession {
 
 	private _invalidateOwnUsage(): void {
 		this._contextView.invalidateOwnUsage();
-	}
-	private _getUnindexedChildUsage(message: AssistantMessage): Usage | undefined {
-		return this._childUsage.getUnindexed(message);
 	}
 
 	// Whole-file own spend, identical to the catalog scan so rows never shift at passivation.

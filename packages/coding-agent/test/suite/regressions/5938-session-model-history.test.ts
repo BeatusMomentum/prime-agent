@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarnessDigestMessage } from "../../../src/core/messages.js";
 import { loadHarnessState } from "../../../src/core/refinement/index.js";
 import type { FileEntry, SessionEntry } from "../../../src/core/session-manager.js";
-import { emptyUsage } from "../../../src/core/usage.js";
+import { emptyUsage, subtractAssistantUsage } from "../../../src/core/usage.js";
 import { SessionContextView } from "../../../src/session/context-view.js";
 import { SessionHarnessContext } from "../../../src/session/harness-context.js";
 import { SessionModelSelection } from "../../../src/session/model-selection.js";
@@ -303,7 +303,13 @@ describe("session model and history ownership boundaries", () => {
 			getContextUsage: () => harness.session.getContextUsage(),
 			getModel: () => harness.session.model,
 			findModel: (provider, id) => harness.session.modelRegistry.find(provider, id),
-			getUnindexedChildUsage: (candidate) => (candidate === message ? unindexed : undefined),
+			subtractUnindexedChildUsage: (ownUsage, entries) => {
+				for (const entry of entries) {
+					if (entry.type === "message" && entry.message === message && unindexed) {
+						subtractAssistantUsage(ownUsage, unindexed);
+					}
+				}
+			},
 			getLiveChildren: () => [],
 			getRlmSessionDir: () => undefined,
 		});
