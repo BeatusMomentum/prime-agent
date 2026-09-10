@@ -72,6 +72,8 @@ Each release keeps its executable and assets together under `releases/`. The sta
 
 Reinstalling the same archive creates a fresh release directory with a unique suffix, so it can repair missing or changed assets without modifying files used by existing processes. Old release directories are retained; there is no automatic garbage collection yet.
 
+Activation replaces the current launcher before refreshing the previous launcher. Normal interruption finishes retaining the replaced release during cleanup. A forced kill between those operations keeps the earlier rollback target intact; it may therefore point to an older retained release rather than the release that was just replaced. A forced kill still requires confirming and clearing the stale installation lock.
+
 The installer still shows download and verification progress and can prepare Python. Compilation removes JavaScript dependency installation; Python and external tools still need preparation. Set `PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0` to defer Python setup.
 
 ## Migration from npm
@@ -79,6 +81,8 @@ The installer still shows download and verification progress and can prepare Pyt
 Releases containing native archives also include a bridge at the existing npm CLI entrypoint. An old version can install that release through its existing updater; its next normal user launch downloads and verifies the compiled application. Internal daemon and restart-coordinator launches do not start a migration download, so they can report liveness immediately; they can reuse an already compatible compiled release. The bridge only migrates conventional global npm installs whose command still points to that package. It then transfers that owned command link to the managed native launcher, so subsequent launches do not require Node. Existing Node files and shared runtimes are retained.
 
 Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
+
+An interactive update from an older Node release can restore its session on a Node daemon worker before the foreground launcher finishes migration. The public command then runs Bun, while that resident worker keeps running until the daemon is restarted. Resuming the saved conversation after shutdown starts it on Bun; migration does not forcibly replace a healthy worker solely to change runtimes.
 
 Migration reuses an equal or newer managed release. It also checks the captured active release after acquiring the installer lock: if another install wins the race, migration defers to the Node application instead of overwriting that install. The next launch can adopt the newer managed release.
 
@@ -93,6 +97,8 @@ Run `prime-agent update` or `/update` to install the latest version on the curre
 Updates retain the previous release, preserve user configuration and sessions, and use the existing busy-session confirmation and daemon restart coordination. Relaunches resolve the stable launcher after activation, so the new process runs the updated application. The installer checks that the active release has not changed since the update was planned and serializes activation with its installation lock.
 
 Run `prime-agent update --rollback` or `/update --rollback` to restore the previous local release without downloading anything. Its executable and assets are validated before switching. A second rollback restores the release you just left. Rollback requires a retained release and applies only to managed compiled installations. `--force` permits reinstalling the version selected by the release channel.
+
+Normal interruption during rollback finishes retaining the release being left. A forced kill between the two launcher changes can leave both launchers pointing to the restored release. The application still runs and both release directories remain, but another rollback requires manually restoring the previous link after confirming the installer is dead and clearing its stale lock.
 
 ## Coverage and recovery limits
 
