@@ -29,6 +29,7 @@ import {
 } from "./prepared-actions.js";
 
 export interface SessionActionQueueHost {
+	clearQueuedUserMessagesMatching(predicate: (text: string) => boolean): { steering: string[]; followUp: string[] };
 	formatLabel(text: string): string;
 	getScheduler(): Pick<SessionInputScheduler, "invalidatePreparation">;
 	getAgent(): Pick<Agent, "state" | "clearAllQueues" | "abort">;
@@ -251,7 +252,7 @@ export class SessionActionQueue {
 
 	clearQueuedAgentMessages(): { steering: string[]; followUp: string[] } {
 		this.clearEpoch++;
-		return this.clearQueuedUserMessagesMatching(isAgentSessionMessagePrompt);
+		return this.host.clearQueuedUserMessagesMatching(isAgentSessionMessagePrompt);
 	}
 
 	clearQueuedUserMessagesMatching(predicate: (text: string) => boolean): { steering: string[]; followUp: string[] } {

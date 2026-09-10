@@ -28,6 +28,7 @@ type AutonomousRuntimeSnapshot = Pick<
 >;
 
 export interface SessionAutonomousContinuationHost {
+	getStatus(): AgentAutonomousStatus;
 	getCwd(): string;
 	getAgent(): Pick<Agent, "state" | "signal" | "removeQueuedMessages" | "hasQueuedMessages">;
 	getStore(): Pick<SessionManager, "appendCustomMessageEntry">;
@@ -60,7 +61,7 @@ export class SessionAutonomousContinuation {
 	isSuppressed(messages: AgentMessage[]): boolean {
 		return this.suppressionDepth > 0 || messages.some((message) => this.suppressedMessages.has(message));
 	}
-	async next(message: AssistantMessage, signal?: AbortSignal): Promise<AgentMessage | undefined> {
+	next(message: AssistantMessage, signal?: AbortSignal): Promise<AgentMessage | undefined> {
 		return nextAutonomousContinuation(this.state, message, { cwd: this.host.getCwd(), signal });
 	}
 
@@ -81,7 +82,7 @@ export class SessionAutonomousContinuation {
 	}
 
 	formatAutonomousStatus(): string {
-		const status = this.getAutonomousStatus();
+		const status = this.host.getStatus();
 		const state = status.enabled ? "on" : "off";
 		return `Autonomous mode: ${state}. Continuations: ${status.continuationsUsed}/${status.limits.maxContinuations}. Turns: ${status.turnsUsed}/${status.limits.maxTurns}. Tokens: ${status.tokensUsed}/${status.limits.maxTokens}.`;
 	}
@@ -92,7 +93,7 @@ export class SessionAutonomousContinuation {
 			customType: "autonomous_status",
 			content: this.formatAutonomousStatus(),
 			display: true,
-			details: this.getAutonomousStatus(),
+			details: this.host.getStatus(),
 			timestamp: Date.now(),
 		} satisfies CustomMessage<AgentAutonomousStatus>;
 		this.host.getAgent().state.messages.push(message);
