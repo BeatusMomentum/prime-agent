@@ -1,6 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SessionAutonomousContinuation } from "../../../src/session/autonomous-continuation.js";
+import type { SessionAutonomousContinuation } from "../../../src/session/turns/autonomous-continuation.js";
 import { createHarness, getUserTexts, type Harness } from "../harness.js";
 import { createDeferred } from "../scheduling.js";
 
