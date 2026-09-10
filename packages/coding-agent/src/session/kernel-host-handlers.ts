@@ -67,9 +67,7 @@ export function createSessionKernelHostHandlers(host: SessionKernelOperations): 
 		"rlm.create_session": createRlmCreateSessionHostHandler(async ({ prompt, kwargs }) => ({
 			...(await host.createSession(prompt, kwargs)),
 		})),
-		"bash.completed": createAsyncBashCompletionHostHandler(async (details) => {
-			await host.handleBashCompletion(details);
-		}),
+		"bash.completed": createAsyncBashCompletionHostHandler((details) => host.handleBashCompletion(details)),
 		"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => host.findModels(query, limit)),
 		"rlm.list_subagents": createRlmListSubagentsHostHandler(() => host.listSubagents()),
 		"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => host.deleteSubagent(target)),
