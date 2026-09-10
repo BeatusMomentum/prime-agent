@@ -414,15 +414,9 @@ export class AgentSession {
 		getExtensions: () => this._extensionRunner,
 		getAgent: () => this.agent,
 		takeNextTurnMessages: () => this._takePendingNextTurnMessages(),
-		restoreNextTurnMessages: (messages) => this._pendingContext.messages.unshift(...messages),
-		consumePendingDigest: () => {
-			const pending = this._harnessDigestPending;
-			this._harnessDigestPending = false;
-			return pending;
-		},
-		rearmDigest: () => {
-			this._harnessDigestPending = true;
-		},
+		restoreNextTurnMessages: (messages) => this._pendingContext.prependMessages(messages),
+		consumePendingDigest: () => this._harnessContext.consumePendingDigest(),
+		rearmDigest: () => this._harnessContext.rearmDigest(),
 		getDigest: () => this._harnessDigest(),
 		getLatestDigest: () => this._latestContextHarnessDigest(),
 		suppressForMessage: (message) => this._markAutonomousContinuationSuppressed(message),
@@ -467,8 +461,8 @@ export class AgentSession {
 		waitForInputIdle: () => this.waitForSessionInputIdle(),
 		isBusy: (point) => this._isBusyForSessionInput(point),
 		takeNextTurnMessages: () => this._takePendingNextTurnMessages(),
-		restoreNextTurnMessages: (messages) => this._pendingContext.messages.unshift(...messages),
-		appendNextTurnMessage: (message) => this._pendingContext.messages.push(message),
+		restoreNextTurnMessages: (messages) => this._pendingContext.prependMessages(messages),
+		appendNextTurnMessage: (message) => this._pendingContext.appendMessages(message),
 		getActivity: () => this._runtimeActivity(),
 		suppressForMessage: (message) => this._markAutonomousContinuationSuppressed(message),
 		observeDeferral: (action) => this._observeSessionActionDeferral(action),
@@ -512,10 +506,8 @@ export class AgentSession {
 		formatLabel: (text) => compactRlmText(text),
 		getScheduler: () => this._inputScheduler,
 		getAgent: () => this.agent,
-		rearmDigest: () => {
-			this._harnessDigestPending = true;
-		},
-		restoreNextTurnMessages: (messages) => this._pendingContext.messages.unshift(...messages),
+		rearmDigest: () => this._harnessContext.rearmDigest(),
+		restoreNextTurnMessages: (messages) => this._pendingContext.prependMessages(messages),
 		notifyCheckpoints: () => this._notifySessionInputCheckpointChange(),
 		emitQueueUpdate: () => this._emitQueueUpdate(),
 		settleAgentMessage: (id, leg, error) => this._settleAgentMessage(id, leg, error),
@@ -526,8 +518,8 @@ export class AgentSession {
 	});
 	private readonly _actionRecovery = new SessionActionRecovery(this._actionStore, {
 		isTerminalNoticeAction: (action) => this._isRlmTerminalNoticeAction(action),
-		retainTerminalNotice: (id) => this._pendingContext.terminalNoticeActionIds.add(id),
-		releaseTerminalNotice: (id) => this._pendingContext.terminalNoticeActionIds.delete(id),
+		retainTerminalNotice: (id) => this._pendingContext.retainTerminalNotice(id),
+		releaseTerminalNotice: (id) => this._pendingContext.releaseTerminalNotice(id),
 		admit: (action, options) => this._admitSessionInput(action, options),
 	});
 	private readonly _commandExecution = new SessionCommandExecution(this._actionStore, {
@@ -611,7 +603,7 @@ export class AgentSession {
 		executeCommand: (action, epoch) => this._executeSelectedSessionCommand(action, epoch),
 		settleAgentMessage: (id, leg, error) => this._settleAgentMessage(id, leg, error),
 		releaseTurn: (id) => {
-			this._pendingContext.terminalNoticeActionIds.delete(id);
+			this._pendingContext.releaseTerminalNotice(id);
 		},
 		notifyCheckpoints: () => this._notifySessionInputCheckpointChange(),
 		emitQueueUpdate: () => this._emitQueueUpdate(),
@@ -663,7 +655,7 @@ export class AgentSession {
 		hasPendingSessionWork: () => this.hasPendingSessionWork,
 		scheduleContinuation: (continueAfterInput) => this._schedulePostCompactionContinue(continueAfterInput),
 		scheduleRefinement: (willContinue) => this._refinement._scheduleAutoRefineAfterCompaction(willContinue),
-		takeThresholdAutonomousMessages: () => this._autonomousContinuation.pendingThresholdMessages.splice(0),
+		takeThresholdAutonomousMessages: () => this._autonomousContinuation.takePendingThresholdMessages(),
 		getThresholdGoalContinuation: () => this._goalContinuation.thresholdContinuation,
 		clearAutonomousContinuations: (shouldContinue, messages) =>
 			this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(shouldContinue, messages),
@@ -728,12 +720,6 @@ export class AgentSession {
 	});
 	/** Fresh/empty contexts defer digest injection to the first committed turn so untouched sessions stay empty. */
 	private readonly _harnessContext: SessionHarnessContext;
-	private get _harnessDigestPending(): boolean {
-		return this._harnessContext.digestPending;
-	}
-	private set _harnessDigestPending(pending: boolean) {
-		this._harnessContext.digestPending = pending;
-	}
 
 	private readonly _bash = new SessionBash({
 		getCwd: () => this.sessionManager.getCwd(),
@@ -799,7 +785,7 @@ export class AgentSession {
 		removeQueuedMessages: (predicate) => this.agent.removeQueuedMessages(predicate),
 		followUp: (message) => this.agent.followUp(message),
 		onMessageConsumed: (message) => {
-			this._autonomousContinuation.snapshots.delete(message);
+			this._autonomousContinuation.forgetSnapshot(message);
 		},
 	});
 
@@ -1081,8 +1067,8 @@ export class AgentSession {
 				admit: (action, options) => this._admitSessionInput(action, options),
 				cancelActions: (predicate, error) => this._cancelSessionActions(predicate, error),
 				clearPendingGoalContexts: () => {
-					this._pendingContext.messages = this._pendingContext.messages.filter(
-						(message) => message.customType !== GOAL_CONTEXT_CUSTOM_TYPE,
+					this._pendingContext.removeMessagesMatching(
+						(message) => message.customType === GOAL_CONTEXT_CUSTOM_TYPE,
 					);
 				},
 				emitQueueUpdate: () => this._emitQueueUpdate(),
@@ -1102,7 +1088,7 @@ export class AgentSession {
 			this._startGoal(config.initialGoal.objective, config.initialGoal.tokenBudget);
 			// Goal context is the model's only source of goal visibility; action
 			// admission is unavailable mid-construction, so ride the next turn.
-			this._pendingContext.messages.push(createGoalContextMessage(this._goals.state, "continuation"));
+			this._pendingContext.appendMessages(createGoalContextMessage(this._goals.state, "continuation"));
 		}
 		this._restoreLateIpythonSentAgentMessages();
 		this._goals.restartAccounting();
@@ -2466,7 +2452,7 @@ export class AgentSession {
 			(action) =>
 				action.payload.kind === "turn" &&
 				!action.payload.queueVisible &&
-				!this._pendingContext.terminalNoticeActionIds.has(action.id),
+				!this._pendingContext.isRetainedTerminalNotice(action.id),
 			new Error("Prompt aborted before delivery."),
 		);
 		this._cancelPostCompactionContinue();
@@ -2483,7 +2469,7 @@ export class AgentSession {
 		const branchSummaryOperation = this._branchSummaryOperation;
 		this.requestAbort();
 		this._cancelActiveRlmChildRuns("Parent session aborted");
-		this._goalContinuation.abortInProgress = this._goals.state.status === "active";
+		this._goalContinuation.beginAbort();
 		try {
 			await Promise.allSettled([
 				this.agent.waitForIdle(),
@@ -2492,7 +2478,7 @@ export class AgentSession {
 				...(branchSummaryOperation ? [branchSummaryOperation] : []),
 			]);
 		} finally {
-			this._goalContinuation.abortInProgress = false;
+			this._goalContinuation.finishAbort();
 		}
 	}
 
@@ -2504,7 +2490,7 @@ export class AgentSession {
 		this.abortRetry();
 		this._children.cancelQuiescenceWaits();
 		this._cancelActiveRlmChildRuns("Parent session aborted for update restart");
-		this._goalContinuation.abortInProgress = this._goals.state.status === "active";
+		this._goalContinuation.beginAbort();
 		this.agent.abort();
 		if (this._goalContinuation.abortInProgress) {
 			void this.agent
@@ -2512,7 +2498,7 @@ export class AgentSession {
 				.then(() => this._events.queue)
 				.catch(() => undefined)
 				.finally(() => {
-					this._goalContinuation.abortInProgress = false;
+					this._goalContinuation.finishAbort();
 				});
 		}
 	}
@@ -2588,7 +2574,9 @@ export class AgentSession {
 	): void {
 		this._refinement._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		if (this._goals.state.status === "active" && !signal.aborted) {
-			this._goalContinuation.awaitsChildWork ||= !this.agent.hasQueuedMessages();
+			if (!this._goalContinuation.awaitsChildWork && !this.agent.hasQueuedMessages()) {
+				this._goalContinuation.deferUntilChildSettlement();
+			}
 			this.resumeQueuedWork();
 			if (this.agent.hasQueuedMessages()) this._schedulePostCompactionContinue();
 		}
