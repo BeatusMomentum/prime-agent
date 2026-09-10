@@ -473,10 +473,15 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 		const internals = harness.session as unknown as {
+			_refinement: {
+				_auto: {
+					_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
+				};
+			};
+
 			_cancelPostCompactionContinue(): void;
-			_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
 		};
-		const scheduleAutoRefineSpy = vi.spyOn(internals, "_scheduleAutoRefineAfterCompaction");
+		const scheduleAutoRefineSpy = vi.spyOn(internals._refinement._auto, "_scheduleAutoRefineAfterCompaction");
 		try {
 			await harness.session.prompt("one");
 			await harness.session.prompt("two");
@@ -577,10 +582,15 @@ describe("AgentSession compaction characterization", () => {
 		await harness.session.followUp("preparing across compaction", undefined, { resumeIfIdle: true });
 		await vi.waitFor(() => expect(preparationReached).toHaveBeenCalledOnce());
 		const internals = harness.session as unknown as SessionWithCompactionInternals & {
+			_refinement: {
+				_auto: {
+					_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
+				};
+			};
+
 			_cancelPostCompactionContinue(): void;
-			_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
 		};
-		const scheduleAutoRefineSpy = vi.spyOn(internals, "_scheduleAutoRefineAfterCompaction");
+		const scheduleAutoRefineSpy = vi.spyOn(internals._refinement._auto, "_scheduleAutoRefineAfterCompaction");
 		try {
 			await internals._runAutoCompaction("requested", false);
 			expect(scheduleAutoRefineSpy).toHaveBeenCalledWith(true);
@@ -1239,8 +1249,11 @@ describe("AgentSession compaction characterization", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as {
+			_refinement: {
+				_refineInFlight: Promise<void> | undefined;
+			};
+
 			_schedulePostCompactionContinue(): void;
-			_refineInFlight: Promise<void> | undefined;
 		};
 		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
 		const pause = harness.session.acquireQueuedWorkPause();
@@ -1249,12 +1262,12 @@ describe("AgentSession compaction characterization", () => {
 
 		// Refine enters its apply phase while the runner waits out the pause.
 		const refineApply = createDeferred();
-		sessionInternals._refineInFlight = refineApply.promise;
+		sessionInternals._refinement._refineInFlight = refineApply.promise;
 		pause.release();
 		await new Promise<void>(setImmediate);
 		expect(continueSpy).not.toHaveBeenCalled();
 
-		sessionInternals._refineInFlight = undefined;
+		sessionInternals._refinement._refineInFlight = undefined;
 		refineApply.resolve();
 		await harness.session.waitForHeadlessIdle();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
