@@ -31,6 +31,7 @@ export interface ContextViewHost {
 		"getEntries" | "getBranch" | "getSessionId" | "getSessionFile" | "getSessionName"
 	>;
 	getMessages(): AgentMessage[];
+	getContextUsage(): ContextUsage | undefined;
 	getModel(): Model<Api> | undefined;
 	findModel(provider: string, modelId: string): Model<Api> | undefined;
 	getUnindexedChildUsage(message: AssistantMessage): Usage | undefined;
@@ -84,7 +85,7 @@ export class SessionContextView {
 				total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
 			},
 			cost: totalCost,
-			contextUsage: this.getContextUsage(),
+			contextUsage: this.host.getContextUsage(),
 		};
 	}
 
@@ -192,7 +193,7 @@ export class SessionContextView {
 			model: model ? { provider: model.provider, id: model.id } : undefined,
 			ownUsage,
 			totalUsage,
-			contextUsage: this.getContextUsage(),
+			contextUsage: this.host.getContextUsage(),
 			children,
 		};
 	}
