@@ -1,2 +1,3 @@
 - Added verified updates and offline rollback for compiled Prime Agent installations, preserving sessions and restarting with the activated release.
 - Fixed normal interruptions during rollback losing the release needed to undo that rollback.
+- Fixed malformed compiled-release metadata causing unnecessary npm reinstalls and daemon restarts.

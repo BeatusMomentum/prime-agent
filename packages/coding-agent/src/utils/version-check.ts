@@ -159,10 +159,12 @@ export async function getLatestPiRelease(
 		release.installSpec = installSpec;
 	}
 	if (Array.isArray(data.binaries)) {
+		// Invalid optional native metadata must not discard a valid npm release.
+		// Publish the list only after every entry passes validation.
 		const binaries: NativeReleaseArtifact[] = [];
 		const platforms = new Set<string>();
 		for (const candidate of data.binaries) {
-			if (!candidate || typeof candidate !== "object") throw new Error("Invalid compiled release manifest");
+			if (!candidate || typeof candidate !== "object") return release;
 			const artifact = candidate as Partial<NativeReleaseArtifact>;
 			if (
 				typeof artifact.platform !== "string" ||
@@ -172,7 +174,7 @@ export async function getLatestPiRelease(
 				typeof artifact.sha256 !== "string" ||
 				!/^[a-f0-9]{64}$/.test(artifact.sha256)
 			)
-				throw new Error("Invalid compiled release manifest");
+				return release;
 			platforms.add(artifact.platform);
 			binaries.push({ platform: artifact.platform, file: artifact.file, sha256: artifact.sha256 });
 		}
