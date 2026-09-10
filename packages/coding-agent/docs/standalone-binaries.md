@@ -82,6 +82,8 @@ Releases containing native archives also include a bridge at the existing npm CL
 
 Homebrew, source checkouts, other package-manager layouts, read-only prefixes, and unsupported platforms keep the Node route. `PRIME_AGENT_INSTALL_METHOD=node` disables migration. Offline launches defer downloads. Installation failures keep the Node application usable, and a later launch can retry. Migration also works when npm lifecycle scripts were disabled.
 
+Already-released updaters pass the package URL directly to npm. npm 12's default remote-package policy can reject that download with `EALLOWREMOTE` before this bridge runs; the installed Node application remains usable. For a trusted release source, retry with `NPM_CONFIG_ALLOW_REMOTE=all prime-agent update`, then launch `prime-agent` normally to migrate. This setting applies only to that command and its children, without changing global npm configuration. Fresh compiled installs and compiled updates do not use npm; unsupported hosts remaining on Node can encounter this policy on later updates too.
+
 An interactive update from an older Node release can restore its session on a Node daemon worker before the foreground launcher finishes migration. The public command then runs Bun, while that resident worker keeps running until the daemon is restarted. Resuming the saved conversation after shutdown starts it on Bun; migration does not forcibly replace a healthy worker solely to change runtimes.
 
 Migration reuses an equal or newer managed release. It also checks the captured active release after acquiring the installer lock: if another install wins the race, migration defers to the Node application instead of overwriting that install. The next launch can adopt the newer managed release.
